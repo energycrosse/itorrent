@@ -8,6 +8,7 @@
 import Combine
 import MvvmFoundation
 import SwiftUI
+import UIKit
 
 class PreferencesViewModel: BasePreferencesViewModel, @unchecked Sendable {
     required init() {
@@ -69,23 +70,54 @@ private extension PreferencesViewModel {
 //            })
         })
 
+        sections.append(.init(id: "background", header: "Background Downloading") {
+            PRSwitchViewModel(with: .init(
+                title: "Enable Background Downloading",
+                value: preferences.$isBackgroundDownloadEnabled.binding
+            ))
+
 #if IS_SUPPORT_LOCATION_BG
-        sections.append(.init(id: "background", header: %"preferences.background") {
-            PRSwitchViewModel(with: .init(title: %"preferences.background.enable", value: preferences.$isBackgroundDownloadEnabled.binding))
-            PRButtonViewModel(with: .init(title: %"preferences.background.mode", value: preferences.$backgroundMode.map(\.name).eraseToAnyPublisher(), accessories: [
-                .popUpMenu(
-                    .init(title: %"preferences.background.mode.action", children: [
-                        uiAction(from: .audio),
-                        uiAction(from: .location),
-                    ]), options: .init(tintColor: .tintColor)
-                ),
-            ]))
+            PRButtonViewModel(with: .init(
+                title: %"preferences.background.mode",
+                value: preferences.$backgroundMode.map(\.name).eraseToAnyPublisher(),
+                accessories: [
+                    .popUpMenu(
+                        .init(title: %"preferences.background.mode.action", children: [
+                            uiAction(from: .audio),
+                            uiAction(from: .location),
+                        ]),
+                        options: .init(tintColor: .tintColor)
+                    ),
+                ]
+            ))
 
             if preferences.backgroundMode == .location {
-                PRSwitchViewModel(with: .init(title: %"preferences.background.location.indicator.enable", value: preferences.$isBackgroundLocationIndicatorEnabled.binding))
+                PRSwitchViewModel(with: .init(
+                    title: %"preferences.background.location.indicator.enable",
+                    value: preferences.$isBackgroundLocationIndicatorEnabled.binding
+                ))
             }
-        })
+#else
+            PRButtonViewModel(with: .init(
+                title: "Background Method",
+                value: Just("Audio").eraseToAnyPublisher()
+            ))
 #endif
+
+            PRSwitchViewModel(with: .init(
+                title: "Continue Seeding in Background",
+                value: preferences.$isBackgroundSeedingEnabled.binding
+            ))
+
+            PRButtonViewModel(with: .init(
+                title: "Copy Background Diagnostics",
+                value: Just("Copy").eraseToAnyPublisher(),
+                selectAction: { [unowned self] in
+                    UIPasteboard.general.string = BackgroundService.shared.diagnosticsReport
+                    dismissSelection.send()
+                }
+            ))
+        })
 
         sections.append(.init(id: "seeding", header: %"preferences.seeding") {
             PRSwitchViewModel(with: .init(title: %"preferences.seeding.stopOnFinish", value: preferences.$stopSeedingOnFinish.binding, isDangerous: true))

@@ -1,0 +1,144 @@
+name: "Build iTorrent Background IPA"
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - "iTorrent/**"
+      - "ProgressWidget/**"
+      - "Submodules/**"
+      - "iTorrent.xcodeproj/**"
+      - "iTorrent.xcworkspace/**"
+      - ".github/workflows/background-ipa.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: itorrent-background-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: "26.6"
+
+      - name: Toolchain diagnostics
+        run: |
+          set -euxo pipefail
+          sw_vers
+          xcodebuild -version
+          swift --version
+          git submodule status
+
+      - name: Install build dependency
+        run: |
+          brew list boost >/dev/null 2>&1 || brew install boost
+
+      - name: Build LibTorrent
+        run: |
+          set -euxo pipefail
+          chmod +x ./Submodules/LibTorrent-Swift/make.sh
+          ./Submodules/LibTorrent-Swift/make.sh
+
+      - name: Build unsigned iPhone application
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -workspace iTorrent.xcworkspace \
+            -scheme "iTorrent" \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination "generic/platform=iOS" \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            -skipMacroValidation \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_STYLE=Automatic \
+            DEVELOPMENT_TEAM="" \
+            PROVISIONING_PROFILE_SPECIFIER="" \
+            clean build 2>&1 | tee "$RUNNER_TEMP/xcodebuild.log"
+
+      - name: Package IPA
+        run: |
+          set -euxo pipefail
+
+          APP_PATH="$(find "$RUNNER_TEMP/DerivedData/Build/Products" -type d -path "*/Release-iphoneos/iTorrent.app" -print -quit)"
+          test -n "$APP_PATH"
+          test -d "$APP_PATH"
+
+          mkdir -p "$RUNNER_TEMP/package/Payload"
+          ditto "$APP_PATH" "$RUNNER_TEMP/package/Payload/iTorrent.app"
+
+          cd "$RUNNER_TEMP/package"
+          /usr/bin/zip -qry "$RUNNER_TEMP/iTorrent-Background-UNSIGNED.ipa" Payload
+          test -s "$RUNNER_TEMP/iTorrent-Background-UNSIGNED.ipa"
+
+      - name: Validate IPA
+        run: |
+          set -euxo pipefail
+
+          APP="$RUNNER_TEMP/package/Payload/iTorrent.app"
+          INFO="$APP/Info.plist"
+
+          test -f "$INFO"
+
+          BUNDLE_ID=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$INFO")
+          VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$INFO")
+          BUILD=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$INFO")
+          EXECUTABLE=$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$INFO")
+
+          test -n "$BUNDLE_ID"
+          test -n "$VERSION"
+          test -n "$BUILD"
+          test -x "$APP/$EXECUTABLE"
+
+          echo "Bundle identifier: $BUNDLE_ID"
+          echo "Version: $VERSION ($BUILD)"
+          echo "Executable: $EXECUTABLE"
+
+          file "$APP/$EXECUTABLE"
+          lipo -info "$APP/$EXECUTABLE"
+          lipo -info "$APP/$EXECUTABLE" | grep -q "arm64"
+
+          echo "Declared background modes:"
+          /usr/libexec/PlistBuddy -c "Print :UIBackgroundModes" "$INFO"
+          plutil -extract UIBackgroundModes json -o - "$INFO" | grep -q '"audio"'
+
+          echo "Embedded extensions:"
+          find "$APP" -maxdepth 3 -type d -name "*.appex" -print || true
+
+          echo "Embedded frameworks:"
+          find "$APP/Frameworks" -maxdepth 1 -type d -name "*.framework" -print 2>/dev/null || true
+
+          echo "IPA contents:"
+          unzip -l "$RUNNER_TEMP/iTorrent-Background-UNSIGNED.ipa" | head -200
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: iTorrent-Background-UNSIGNED-${{ github.sha }}
+          path: ${{ runner.temp }}/iTorrent-Background-UNSIGNED.ipa
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: iTorrent-Background-Build-Log-${{ github.sha }}
+          path: ${{ runner.temp }}/xcodebuild.log
+          if-no-files-found: warn
+          retention-days: 14

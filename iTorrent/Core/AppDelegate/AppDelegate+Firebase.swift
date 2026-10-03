@@ -13,7 +13,13 @@ import FirebaseCore
 extension AppDelegate {
     func registerFirebase() {
 #if canImport(FirebaseCore)
-        FirebaseApp.configure()
+        guard let path = Bundle.main.path(forResource: "GoogleService-Info", ofType: "plist"),
+              let options = FirebaseOptions(contentsOfFile: path)
+        else {
+            print("Firebase configuration is not bundled; analytics and crash reporting are disabled.")
+            return
+        }
+        FirebaseApp.configure(options: options)
 #endif
     }
 }

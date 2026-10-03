@@ -7,6 +7,7 @@
 
 import Combine
 import LibTorrent
+import UIKit
 
 extension SceneDelegate {
     func startBackgroundIfNeeded() {
@@ -21,11 +22,20 @@ extension SceneDelegate {
 
     var backgroundStateObserverBind: AnyCancellable {
         TorrentService.shared.updateNotifier
-            .filter { _ in BackgroundService.shared.isRunning }
-            .filter { $0.oldSnapshot.friendlyState != $0.handle?.snapshot.friendlyState }
+            .receive(on: DispatchQueue.main)
             .sink { _ in
-                guard !BackgroundService.isBackgroundNeeded else { return }
-                BackgroundService.shared.stop()
+                guard UIApplication.shared.applicationState != .active else { return }
+
+                if PreferencesStorage.shared.isBackgroundDownloadEnabled,
+                   BackgroundService.isBackgroundNeeded
+                {
+                    if !BackgroundService.shared.isRunning {
+                        BackgroundDiagnostics.shared.record("torrent state requested background restart")
+                        BackgroundService.shared.start()
+                    }
+                } else {
+                    BackgroundService.shared.stop()
+                }
             }
     }
 }

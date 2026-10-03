@@ -111,14 +111,24 @@ class SceneDelegate: MvvmSceneDelegate {
         }
     }
 
+    func sceneWillResignActive(_ scene: UIScene) {
+        // Establish the background session before suspension becomes imminent.
+        startBackgroundIfNeeded()
+    }
+
     func sceneDidEnterBackground(_ scene: UIScene) {
         UIApplication.shared.applicationIconBadgeNumber = 0
         startBackgroundIfNeeded()
+        BackgroundDiagnostics.shared.record("scene entered background")
     }
 
     func sceneWillEnterForeground(_ scene: UIScene) {
         UIApplication.shared.applicationIconBadgeNumber = 0
+    }
+
+    func sceneDidBecomeActive(_ scene: UIScene) {
         stopBackground()
+        BackgroundDiagnostics.shared.record("scene became active")
     }
 
     override func binding() {

@@ -24,12 +24,24 @@ extension SceneDelegate {
 
     var backgroundDownloadModeBind: AnyCancellable {
         Publishers.CombineLatest(PreferencesStorage.shared.$backgroundMode, PreferencesStorage.shared.$isBackgroundDownloadEnabled)
+            .receive(on: DispatchQueue.main)
             .sink { mode, isBackgroundDownloadEnabled in
-                guard isBackgroundDownloadEnabled else { return }
-                Task {
-                    // If fail set audio as unfailable mode
+                guard isBackgroundDownloadEnabled else {
+                    BackgroundService.shared.stop()
+                    return
+                }
+
+                Task { @MainActor in
+                    // Fall back to audio if a permission-gated mode cannot prepare.
                     if await !BackgroundService.shared.applyMode(mode) {
                         PreferencesStorage.shared.backgroundMode = .audio
+                        return
+                    }
+
+                    if UIApplication.shared.applicationState != .active,
+                       BackgroundService.isBackgroundNeeded
+                    {
+                        BackgroundService.shared.start()
                     }
                 }
             }

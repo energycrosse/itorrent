@@ -8,169 +8,388 @@
 import AVFoundation
 import UIKit
 
-class AudioBackgroundService: @unchecked Sendable {
+/// Keeps the torrent engine eligible for background execution by maintaining the
+/// existing iTorrent background-audio session while background work is required.
+///
+/// UIKit background tasks are used only as short transition/recovery assertions.
+/// They are never recursively renewed as an indefinite execution mechanism.
+final class AudioBackgroundService: @unchecked Sendable {
     private var player: AVAudioPlayer?
-    private var backgroundTask: UIBackgroundTaskIdentifier?
-    private var asyncTask: Task<Void, Never>?
-    private let asyncTaskLock = NSLock()
+    private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
+
+    private var observerTokens: [NSObjectProtocol] = []
+    private var monitorTask: Task<Void, Never>?
+    private var recoveryTask: Task<Void, Never>?
+    private var transitionEndTask: Task<Void, Never>?
+
+    private var recoveryAttempt = 0
+    private let maximumRecoveryAttempts = 5
+    private var stopping = false
 }
 
 extension AudioBackgroundService: BackgroundServiceProtocol {
     var isRunning: Bool {
-        (player?.isPlaying ?? false) || (backgroundTask != nil && backgroundTask != .invalid)
+        onMain {
+            (player?.isPlaying ?? false) || backgroundTask != .invalid
+        }
     }
-    
+
     func start() -> Bool {
-        guard !isRunning else { return true }
-        startBackgroundTask()
-        NotificationCenter.default.addObserver(self, selector: #selector(interruptedAudio), name: AVAudioSession.interruptionNotification, object: AVAudioSession.sharedInstance())
-        return true
+        onMain { startOnMain() }
     }
 
     func stop() {
-        NotificationCenter.default.removeObserver(self, name: AVAudioSession.interruptionNotification, object: nil)
-        replaceAsyncTask(with: nil)
-        stopBackgroundTask()
-        stopAudio()
+        onMain { stopOnMain() }
     }
-    
+
     func prepare() async -> Bool { true }
 }
 
 private extension AudioBackgroundService {
-    @objc func interruptedAudio(_ notification: Notification) {
-        guard notification.name == AVAudioSession.interruptionNotification,
-              let typeValue = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
-              let type = AVAudioSession.InterruptionType(rawValue: typeValue)
+    func startOnMain() -> Bool {
+        guard PreferencesStorage.shared.isBackgroundDownloadEnabled,
+              BackgroundService.isBackgroundNeeded
+        else {
+            return false
+        }
+
+        stopping = false
+        installObserversIfNeeded()
+        beginTransitionBackgroundTask(reason: "start")
+        BackgroundDiagnostics.shared.setState("starting")
+
+        let started = ensureAudioPlaying(reason: "start")
+        if !started {
+            scheduleRecovery(reason: "initial start")
+        }
+
+        startMonitorIfNeeded()
+        return started || backgroundTask != .invalid
+    }
+
+    func stopOnMain() {
+        stopping = true
+
+        monitorTask?.cancel()
+        monitorTask = nil
+        recoveryTask?.cancel()
+        recoveryTask = nil
+        transitionEndTask?.cancel()
+        transitionEndTask = nil
+
+        removeObservers()
+        endTransitionBackgroundTask(reason: "stop")
+
+        player?.stop()
+        player = nil
+
+        do {
+            try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        } catch {
+            BackgroundDiagnostics.shared.record("audio session deactivation failed: \(error.localizedDescription)")
+        }
+
+        recoveryAttempt = 0
+        BackgroundDiagnostics.shared.setRecoveryAttempts(0)
+        BackgroundDiagnostics.shared.setAudio(sessionActive: false, playerActive: false)
+        BackgroundDiagnostics.shared.setState("inactive")
+        BackgroundDiagnostics.shared.record("background audio stopped")
+    }
+
+    @discardableResult
+    func ensureAudioPlaying(reason: String) -> Bool {
+        guard !stopping,
+              PreferencesStorage.shared.isBackgroundDownloadEnabled,
+              BackgroundService.isBackgroundNeeded
+        else {
+            return false
+        }
+
+        do {
+            let audioSession = AVAudioSession.sharedInstance()
+            try audioSession.setCategory(.playback, mode: .default, options: [.mixWithOthers])
+            try audioSession.setActive(true)
+            BackgroundDiagnostics.shared.setAudio(sessionActive: true)
+
+            let audioPlayer: AVAudioPlayer
+            if let player {
+                audioPlayer = player
+            } else {
+                guard let url = Bundle.main.url(forResource: "sound", withExtension: "m4a") else {
+                    throw NSError(
+                        domain: "iTorrent.BackgroundAudio",
+                        code: 1,
+                        userInfo: [NSLocalizedDescriptionKey: "sound.m4a is missing from the application bundle"]
+                    )
+                }
+
+                let newPlayer = try AVAudioPlayer(contentsOf: url)
+                newPlayer.volume = 0.01
+                newPlayer.numberOfLoops = -1
+                newPlayer.prepareToPlay()
+                player = newPlayer
+                audioPlayer = newPlayer
+            }
+
+            guard audioPlayer.play() else {
+                throw NSError(
+                    domain: "iTorrent.BackgroundAudio",
+                    code: 2,
+                    userInfo: [NSLocalizedDescriptionKey: "AVAudioPlayer refused to start"]
+                )
+            }
+
+            recoveryAttempt = 0
+            BackgroundDiagnostics.shared.setRecoveryAttempts(0)
+            BackgroundDiagnostics.shared.setAudio(playerActive: true)
+            BackgroundDiagnostics.shared.setState("active")
+            BackgroundDiagnostics.shared.record("audio keepalive active (\(reason))")
+
+            scheduleTransitionTaskEnd()
+            return true
+        } catch {
+            BackgroundDiagnostics.shared.setAudio(playerActive: false)
+            BackgroundDiagnostics.shared.failure("audio start failed (\(reason)): \(error.localizedDescription)")
+            return false
+        }
+    }
+
+    func installObserversIfNeeded() {
+        guard observerTokens.isEmpty else { return }
+
+        let center = NotificationCenter.default
+        let session = AVAudioSession.sharedInstance()
+
+        observerTokens.append(
+            center.addObserver(
+                forName: AVAudioSession.interruptionNotification,
+                object: session,
+                queue: .main
+            ) { [weak self] notification in
+                self?.handleInterruption(notification)
+            }
+        )
+
+        observerTokens.append(
+            center.addObserver(
+                forName: AVAudioSession.routeChangeNotification,
+                object: session,
+                queue: .main
+            ) { [weak self] notification in
+                self?.handleRouteChange(notification)
+            }
+        )
+
+        observerTokens.append(
+            center.addObserver(
+                forName: AVAudioSession.mediaServicesWereResetNotification,
+                object: session,
+                queue: .main
+            ) { [weak self] _ in
+                self?.handleMediaServicesReset()
+            }
+        )
+    }
+
+    func removeObservers() {
+        let center = NotificationCenter.default
+        observerTokens.forEach(center.removeObserver)
+        observerTokens.removeAll()
+    }
+
+    func handleInterruption(_ notification: Notification) {
+        guard let value = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+              let type = AVAudioSession.InterruptionType(rawValue: value)
         else {
             return
         }
 
         switch type {
         case .began:
-            // Keep the service alive while the system owns the audio session.
-            break
+            BackgroundDiagnostics.shared.setAudio(sessionActive: false, playerActive: player?.isPlaying ?? false)
+            BackgroundDiagnostics.shared.setState("interrupted")
+            BackgroundDiagnostics.shared.record("audio interruption began")
+            beginTransitionBackgroundTask(reason: "audio interruption")
+
         case .ended:
-            // This is not user-controlled media playback, so background demand—not
-            // AVAudioSessionInterruptionOptionShouldResume—determines whether to resume.
-            guard BackgroundService.isBackgroundNeeded else { return }
-
-            do {
-                try AVAudioSession.sharedInstance().setActive(true)
-            } catch {
-                print("\(Date.now.timestamp) [BG] failed to reactivate audio session: \(error)")
+            BackgroundDiagnostics.shared.record("audio interruption ended")
+            guard BackgroundService.isBackgroundNeeded,
+                  PreferencesStorage.shared.isBackgroundDownloadEnabled
+            else {
+                return
             }
-            startBackgroundTask()
+
+            recoveryTask?.cancel()
+            recoveryTask = nil
+
+            if !ensureAudioPlaying(reason: "interruption ended") {
+                scheduleRecovery(reason: "interruption ended")
+            }
+
         @unknown default:
-            break
+            BackgroundDiagnostics.shared.record("unknown audio interruption type")
         }
     }
 
-    static func cratePlayer() throws -> AVAudioPlayer {
-        //            let bundle = Bundle.main.path(forResource: "3", ofType: "wav")
-        let bundle = Bundle.main.path(forResource: "sound", ofType: "m4a")
-        let alertSound = URL(fileURLWithPath: bundle!)
-        try AVAudioSession.sharedInstance().setCategory(.playback, options: .mixWithOthers)
-        try AVAudioSession.sharedInstance().setActive(true)
-        let player = try AVAudioPlayer(contentsOf: alertSound)
-        player.volume = 0.01
-        player.numberOfLoops = -1
-        return player
-    }
+    func handleRouteChange(_ notification: Notification) {
+        let rawReason = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt ?? 0
+        let reason = AVAudioSession.RouteChangeReason(rawValue: rawReason)
+        BackgroundDiagnostics.shared.record("audio route changed: \(String(describing: reason))")
 
-    func getPlayer() throws -> AVAudioPlayer {
-        if let player {
-            return player
-        }
-
-        let newPlayer = try Self.cratePlayer()
-        player = newPlayer
-        return newPlayer
-    }
-
-    @discardableResult
-    func playAudio() -> Bool {
-        do {
-            let player = try getPlayer()
-//            player.prepareToPlay()
-            player.play()
-            return true
-        } catch {
-            print(error)
-            return false
-        }
-    }
-
-    func stopAudio() {
-        player?.stop()
-    }
-
-    func startBackgroundTask() {
-        guard BackgroundService.isBackgroundNeeded else {
-            stopBackgroundTask()
-            stopAudio()
+        guard BackgroundService.isBackgroundNeeded,
+              PreferencesStorage.shared.isBackgroundDownloadEnabled,
+              !(player?.isPlaying ?? false)
+        else {
             return
         }
 
-        let task = Task { [weak self] in
-            guard let self else { return }
-            await runBackgroundTask()
+        beginTransitionBackgroundTask(reason: "route change")
+        if !ensureAudioPlaying(reason: "route change") {
+            scheduleRecovery(reason: "route change")
         }
-        replaceAsyncTask(with: task)
     }
 
-    func runBackgroundTask() async {
-        while !Task.isCancelled {
-            guard BackgroundService.isBackgroundNeeded else {
-                stopBackgroundTask()
-                stopAudio()
-                return
+    func handleMediaServicesReset() {
+        BackgroundDiagnostics.shared.record("audio media services reset")
+        player?.stop()
+        player = nil
+        BackgroundDiagnostics.shared.setAudio(sessionActive: false, playerActive: false)
+
+        guard BackgroundService.isBackgroundNeeded,
+              PreferencesStorage.shared.isBackgroundDownloadEnabled
+        else {
+            return
+        }
+
+        beginTransitionBackgroundTask(reason: "media services reset")
+        if !ensureAudioPlaying(reason: "media services reset") {
+            scheduleRecovery(reason: "media services reset")
+        }
+    }
+
+    func startMonitorIfNeeded() {
+        guard monitorTask == nil else { return }
+
+        monitorTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(for: .seconds(10))
+                } catch {
+                    return
+                }
+
+                guard !stopping else { return }
+
+                guard PreferencesStorage.shared.isBackgroundDownloadEnabled,
+                      BackgroundService.isBackgroundNeeded
+                else {
+                    stopOnMain()
+                    return
+                }
+
+                if !(player?.isPlaying ?? false) {
+                    BackgroundDiagnostics.shared.setAudio(playerActive: false)
+                    BackgroundDiagnostics.shared.record("monitor detected stopped audio player")
+                    beginTransitionBackgroundTask(reason: "monitor recovery")
+                    scheduleRecovery(reason: "monitor")
+                }
             }
+        }
+    }
 
-            playAudio()
-            stopBackgroundTask()
+    func scheduleRecovery(reason: String) {
+        guard !stopping,
+              recoveryTask == nil,
+              PreferencesStorage.shared.isBackgroundDownloadEnabled,
+              BackgroundService.isBackgroundNeeded
+        else {
+            return
+        }
 
-            backgroundTask = await UIApplication.shared.beginBackgroundTask { [weak self] in
-                guard let self else { return }
-                print("\(Date.now.timestamp) [BG] timeout!!!")
-                startBackgroundTask()
-            }
+        recoveryAttempt += 1
+        BackgroundDiagnostics.shared.setRecoveryAttempts(recoveryAttempt)
 
-            stopAudio()
-            guard !Task.isCancelled else { return }
+        guard recoveryAttempt <= maximumRecoveryAttempts else {
+            BackgroundDiagnostics.shared.setState("failed")
+            BackgroundDiagnostics.shared.failure("recovery limit reached after \(maximumRecoveryAttempts) attempts")
+            endTransitionBackgroundTask(reason: "recovery exhausted")
+            return
+        }
 
-            // If cannot start BG try again
-            guard backgroundTask != .invalid else { continue }
-            print("\(Date.now.timestamp) [BG] running!!!")
+        let delaySeconds = min(1 << (recoveryAttempt - 1), 16)
+        BackgroundDiagnostics.shared.setState("recovering")
+        BackgroundDiagnostics.shared.record(
+            "recovery attempt \(recoveryAttempt)/\(maximumRecoveryAttempts) in \(delaySeconds)s (\(reason))"
+        )
+        beginTransitionBackgroundTask(reason: "recovery")
+
+        recoveryTask = Task { @MainActor [weak self] in
             do {
-                try await Task.sleep(for: .seconds(10))
+                try await Task.sleep(for: .seconds(delaySeconds))
             } catch {
                 return
             }
+
+            guard let self, !stopping else { return }
+
+            let recovered = ensureAudioPlaying(reason: "recovery \(recoveryAttempt)")
+            recoveryTask = nil
+
+            if !recovered {
+                scheduleRecovery(reason: reason)
+            }
         }
     }
 
-    func replaceAsyncTask(with task: Task<Void, Never>?) {
-        asyncTaskLock.lock()
-        let previousTask = asyncTask
-        asyncTask = task
-        asyncTaskLock.unlock()
+    func beginTransitionBackgroundTask(reason: String) {
+        guard backgroundTask == .invalid else { return }
 
-        previousTask?.cancel()
-    }
+        let identifier = UIApplication.shared.beginBackgroundTask(
+            withName: "iTorrent Background Audio Transition"
+        ) { [weak self] in
+            guard let self else { return }
+            BackgroundDiagnostics.shared.record("UIKit transition background task expired")
+            endTransitionBackgroundTask(reason: "expired")
+        }
 
-    func stopBackgroundTask() {
-        if backgroundTask != nil {
-            UIApplication.shared.endBackgroundTask(backgroundTask!)
-            backgroundTask = nil
+        backgroundTask = identifier
+        if identifier == .invalid {
+            BackgroundDiagnostics.shared.record("UIKit transition background task was not granted")
+        } else {
+            BackgroundDiagnostics.shared.record("UIKit transition background task began (\(reason))")
         }
     }
-}
 
-extension Date {
-    var timestamp: String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "HH:mm:ss.SSSZZZZZ"
-        return formatter.string(from: self)
+    func scheduleTransitionTaskEnd() {
+        transitionEndTask?.cancel()
+        transitionEndTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: .seconds(5))
+            } catch {
+                return
+            }
+            self?.endTransitionBackgroundTask(reason: "audio established")
+        }
+    }
+
+    func endTransitionBackgroundTask(reason: String) {
+        transitionEndTask?.cancel()
+        transitionEndTask = nil
+
+        guard backgroundTask != .invalid else { return }
+
+        let identifier = backgroundTask
+        backgroundTask = .invalid
+        UIApplication.shared.endBackgroundTask(identifier)
+        BackgroundDiagnostics.shared.record("UIKit transition background task ended (\(reason))")
+    }
+
+    func onMain<T>(_ body: () -> T) -> T {
+        if Thread.isMainThread {
+            return body()
+        }
+        return DispatchQueue.main.sync(execute: body)
     }
 }

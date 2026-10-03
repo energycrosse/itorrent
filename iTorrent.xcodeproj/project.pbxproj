@@ -10,7 +10,6 @@
 		7C013DE32C28AA3C0026A11B /* sound.m4a in Resources */ = {isa = PBXBuildFile; fileRef = 7C013DE22C28A97F0026A11B /* sound.m4a */; };
 		7C013DE42C2F38AA0026A11B /* LocalizationAttribute.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1352D1D2BBC2F7F00104E7B /* LocalizationAttribute.swift */; };
 		7C013DE52C2F41760026A11B /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = D1AA00CF2AFAC7D200B74629 /* Localizable.xcstrings */; };
-		7C04A6092C446B4D00FBC649 /* GoogleService-Info.plist in Resources */ = {isa = PBXBuildFile; fileRef = 7C04A6082C446B4D00FBC649 /* GoogleService-Info.plist */; };
 		7C1C08AA2C31F2F800569B45 /* PauseTorrentIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C1C08A92C31F2F000569B45 /* PauseTorrentIntent.swift */; };
 		7C1C08AB2C31F31900569B45 /* PauseTorrentIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C1C08A92C31F2F000569B45 /* PauseTorrentIntent.swift */; };
 		7C1C08AD2C31FEA400569B45 /* IntentsService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C1C08AC2C31FEA000569B45 /* IntentsService.swift */; };
@@ -1701,7 +1700,6 @@
 				D1A226982AEEEFCC00669D6D /* Resources */,
 				D1A226D72AEEF73600669D6D /* Embed Frameworks */,
 				7C5FBE522BC0ADCC0069E5A0 /* Embed Foundation Extensions */,
-				7CC4115E2BD2E1D000CA8B13 /* Firebase upload dSYMs */,
 			);
 			buildRules = (
 			);
@@ -1824,7 +1822,6 @@
 				7C5FBE2E2BBF3FF80069E5A0 /* PRSwitchView.xib in Resources */,
 				D1AA00D02AFAC7D200B74629 /* Localizable.xcstrings in Resources */,
 				D1ACFDC72AF6DB9F0098FF56 /* TorrentFilesFileListCell.xib in Resources */,
-				7C04A6092C446B4D00FBC649 /* GoogleService-Info.plist in Resources */,
 				D1B1BECA2AFE25AE0030C2A4 /* TorrentTrackersViewController.xib in Resources */,
 				7CF6DA372C0F6D150033D03F /* InfoPlist.xcstrings in Resources */,
 				D1DB71922BD92238007F9267 /* PatreonPreferencesViewController.xib in Resources */,
