@@ -46,6 +46,8 @@
 	</array>
 	<key>NSLocationDefaultAccuracyReduced</key>
 	<true/>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>iTorrent uses location updates only when you select Location background mode so active downloads can continue while the app is in the background. Location values are not stored or transmitted.</string>
 	<key>SKAdNetworkItems</key>
 	<array>
 		<dict>
@@ -285,6 +287,7 @@
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>
+		<string>location</string>
 		<string>fetch</string>
 		<string>processing</string>
 	</array>

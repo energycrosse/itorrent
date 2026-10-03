@@ -76,13 +76,12 @@ private extension PreferencesViewModel {
                 value: preferences.$isBackgroundDownloadEnabled.binding
             ))
 
-#if IS_SUPPORT_LOCATION_BG
             PRButtonViewModel(with: .init(
-                title: %"preferences.background.mode",
+                title: "Background Method",
                 value: preferences.$backgroundMode.map(\.name).eraseToAnyPublisher(),
                 accessories: [
                     .popUpMenu(
-                        .init(title: %"preferences.background.mode.action", children: [
+                        .init(title: "Choose Background Method", children: [
                             uiAction(from: .audio),
                             uiAction(from: .location),
                         ]),
@@ -93,16 +92,10 @@ private extension PreferencesViewModel {
 
             if preferences.backgroundMode == .location {
                 PRSwitchViewModel(with: .init(
-                    title: %"preferences.background.location.indicator.enable",
+                    title: "Show Background Location Indicator",
                     value: preferences.$isBackgroundLocationIndicatorEnabled.binding
                 ))
             }
-#else
-            PRButtonViewModel(with: .init(
-                title: "Background Method",
-                value: Just("Audio").eraseToAnyPublisher()
-            ))
-#endif
 
             PRSwitchViewModel(with: .init(
                 title: "Continue Seeding in Background",
@@ -274,9 +267,9 @@ private extension BackgroundService.Mode {
     var name: String {
         switch self {
         case .audio:
-            return %"preferences.background.mode.audio"
+            return "Silent Audio"
         case .location:
-            return %"preferences.background.mode.location"
+            return "Location"
         }
     }
 }

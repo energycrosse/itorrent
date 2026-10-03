@@ -14,11 +14,6 @@ import Network
 
 class PreferencesStorage: Resolvable {
     private init() {
-        #if !IS_SUPPORT_LOCATION_BG && !os(tvOS)
-        // Location mode is not allowed by Apple policy
-        backgroundMode = .audio
-        #endif
-
         // Sanity check for defaultStorage if something went wrong
         if defaultStorage != nil, !storageScopes.contains(where: { $0.key == defaultStorage }) { defaultStorage = nil }
 
@@ -110,7 +105,7 @@ class PreferencesStorage: Resolvable {
     @UserDefaultItem("preferencesBackgroundDownloadEnabled", true) var isBackgroundDownloadEnabled: Bool
     @UserDefaultItem("preferencesBackgroundMode", .audio) var backgroundMode: BackgroundService.Mode
     @UserDefaultItem("preferencesBackgroundAllowSeeding", false) var isBackgroundSeedingEnabled: Bool
-    @UserDefaultItem("preferencesBackgroundLocationIndicator", false) var isBackgroundLocationIndicatorEnabled: Bool
+    @UserDefaultItem("preferencesBackgroundLocationIndicator", true) var isBackgroundLocationIndicatorEnabled: Bool
     #endif
 
     @UserDefaultItem("preferencesIsFileSharingEnabled", false) var isFileSharingEnabled: Bool

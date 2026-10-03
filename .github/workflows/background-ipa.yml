@@ -116,6 +116,8 @@ jobs:
           echo "Declared background modes:"
           /usr/libexec/PlistBuddy -c "Print :UIBackgroundModes" "$INFO"
           plutil -extract UIBackgroundModes json -o - "$INFO" | grep -q '"audio"'
+          plutil -extract UIBackgroundModes json -o - "$INFO" | grep -q '"location"'
+          /usr/libexec/PlistBuddy -c "Print :NSLocationWhenInUseUsageDescription" "$INFO"
 
           echo "Embedded extensions:"
           find "$APP" -maxdepth 3 -type d -name "*.appex" -print || true

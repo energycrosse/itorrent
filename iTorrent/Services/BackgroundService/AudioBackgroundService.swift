@@ -115,16 +115,16 @@ private extension AudioBackgroundService {
             if let player {
                 audioPlayer = player
             } else {
-                guard let url = Bundle.main.url(forResource: "sound", withExtension: "m4a") else {
+                guard let url = Bundle.main.url(forResource: "3", withExtension: "wav") else {
                     throw NSError(
                         domain: "iTorrent.BackgroundAudio",
                         code: 1,
-                        userInfo: [NSLocalizedDescriptionKey: "sound.m4a is missing from the application bundle"]
+                        userInfo: [NSLocalizedDescriptionKey: "silent background audio resource is missing from the application bundle"]
                     )
                 }
 
                 let newPlayer = try AVAudioPlayer(contentsOf: url)
-                newPlayer.volume = 0.01
+                newPlayer.volume = 0.0
                 newPlayer.numberOfLoops = -1
                 newPlayer.prepareToPlay()
                 player = newPlayer
